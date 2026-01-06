@@ -1,0 +1,133 @@
+name: Django Semgrep - Custom (logs only)
+
+on:
+  push:
+    branches: [ main, develop, "security/*" ]
+    paths:
+      - "**/*.py"
+      - "requirements*.txt"
+      - "**/settings*.py"
+      - ".semgrep/**"
+      - ".github/workflows/security-scan.yml"
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - "**/*.py"
+      - "requirements*.txt"
+      - "**/settings*.py"
+      - ".semgrep/**"
+      - ".github/workflows/security-scan.yml"
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      scan_type:
+        description: "Type of security scan"
+        required: true
+        default: "full"
+        type: choice
+        options: [ "full", "quick", "django-only", "python-only" ]
+      fail_on_findings:
+        description: "Fail workflow if ERROR findings detected"
+        required: false
+        default: true
+        type: boolean
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  semgrep:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Semgrep + jq
+        run: |
+          python -m pip install --upgrade pip
+          pip install semgrep
+          sudo apt-get update -y
+          sudo apt-get install -y jq
+      
+      - name: Debug File Path
+        run: |
+          pwd
+          ls -R
+          
+      - name: Validate Semgrep Rules
+        # Update this path based on the output of ls -R
+        run: semgrep validate .semgrep/django-security-rules.yml
+
+
+      - name: Run Semgrep (logs)
+        run: |
+          set -euo pipefail
+
+          # Inputs exist only for workflow_dispatch; for push/PR/schedule they are empty.
+          SCAN_TYPE="${{ github.event.inputs.scan_type }}"
+          FAIL_ON_FINDINGS="${{ github.event.inputs.fail_on_findings }}"
+
+          if [ -z "${SCAN_TYPE:-}" ]; then SCAN_TYPE="full"; fi
+          if [ -z "${FAIL_ON_FINDINGS:-}" ]; then FAIL_ON_FINDINGS="true"; fi
+
+          TIMEOUT=900
+          INCLUDE_ARGS=( "--include" "**/*.py" )
+
+          if [ "$SCAN_TYPE" = "quick" ]; then
+            TIMEOUT=300
+            INCLUDE_ARGS=( "--include" "**/settings*.py" "--include" "**/views.py" )
+          elif [ "$SCAN_TYPE" = "django-only" ]; then
+            TIMEOUT=600
+            INCLUDE_ARGS=( "--include" "**/settings*.py" "--include" "**/models.py" "--include" "**/views.py" )
+          elif [ "$SCAN_TYPE" = "python-only" ]; then
+            TIMEOUT=450
+            INCLUDE_ARGS=( "--include" "**/*.py" "--exclude" "**/migrations/**" "--exclude" "**/tests/**" )
+          fi
+
+          echo "=== Semgrep Django scan start ==="
+          echo "scan_type=$SCAN_TYPE timeout=$TIMEOUT fail_on_findings=$FAIL_ON_FINDINGS"
+
+          semgrep scan \
+            --config .semgrep/django-security-rules.yml \
+            --metrics=off \
+            --no-git-ignore \
+            --json --output semgrep-results.json \
+            --time \
+            --timeout "$TIMEOUT" \
+            "${INCLUDE_ARGS[@]}"
+
+          echo ""
+          echo "=== Summary ==="
+          TOTAL=$(jq '.results | length' semgrep-results.json)
+          ERRORS=$(jq '[.results[] | select(.extra.severity=="ERROR")] | length' semgrep-results.json)
+          WARNINGS=$(jq '[.results[] | select(.extra.severity=="WARNING")] | length' semgrep-results.json)
+          INFOS=$(jq '[.results[] | select(.extra.severity=="INFO")] | length' semgrep-results.json)
+
+          echo "Total:   $TOTAL"
+          echo "ERROR:   $ERRORS"
+          echo "WARNING: $WARNINGS"
+          echo "INFO:    $INFOS"
+
+          echo ""
+          echo "=== Findings ==="
+          jq -r '.results
+            | sort_by(.check_id, .path, .start.line)
+            | .[]
+            | "\(.extra.severity) | \(.check_id) | \(.path):\(.start.line) | \(.extra.message)"' \
+            semgrep-results.json
+
+          if [ "$FAIL_ON_FINDINGS" = "true" ] && [ "$ERRORS" -gt 0 ]; then
+            echo ""
+            echo "❌ Failing because ERROR findings > 0"
+            exit 1
+          fi
+
+          echo "=== Semgrep Django scan end ==="

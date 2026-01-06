@@ -1,0 +1,619 @@
+rules:
+  # ============================================================
+  # A01: Broken Access Control (Views & API)
+  # ============================================================
+
+  - id: DJANGO-OWASP-MISSING-AUTH-DECORATOR
+    message: >
+      Django view lacks authentication. Use @login_required, @permission_required,
+      or ensure the class inherits from LoginRequiredMixin.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: security
+      owasp: "A01:2021 Broken Access Control"
+      cwe: "CWE-306"
+      references:
+        - "https://docs.djangoproject.com/en/stable/topics/auth/default/#the-login-required-decorator"
+        - "https://cheatsheetseries.owasp.org/cheatsheets/Access_Control_Cheat_Sheet.html"
+    paths:
+      include: ["**/*.py"]
+      exclude: ["**/tests/**", "**/migrations/**", "**/admin.py", "**/urls.py"]
+    patterns:
+      - pattern: |
+          def $VIEW(request, ...):
+              ...
+              return ...
+      - pattern-not-inside: |
+          @login_required
+          def $VIEW(request, ...):
+              ...
+      - pattern-not-inside: |
+          @permission_required(...)
+          def $VIEW(request, ...):
+              ...
+      - pattern-not-inside: |
+          @rest_framework.decorators.api_view(...)
+          def $VIEW(request, ...):
+              ...
+
+  - id: DJANGO-OWASP-OBJECT-LEVEL-AUTH
+    message: >
+      Potential IDOR/BOLA: Object accessed via user-controlled ID without checking ownership.
+      Ensure you filter by `request.user` (e.g., .filter(owner=request.user)) before getting the object.
+    severity: ERROR
+    languages: [python]
+    mode: taint
+    metadata:
+      category: security
+      owasp: "A01:2021 Broken Access Control"
+      cwe: "CWE-639"
+      references:
+        - "https://cheatsheetseries.owasp.org/cheatsheets/Insecure_Direct_Object_Reference_Prevention_Cheat_Sheet.html"
+    pattern-sources:
+      - pattern: request.GET.get(...)
+      - pattern: request.POST.get(...)
+      - pattern: request.data.get(...)
+      - pattern: kwargs.get(...)
+      # Catches path parameters defined in views
+      - pattern: |
+          def $VIEW(..., $ID, ...):
+              ...
+    pattern-sinks:
+      - pattern: $MODEL.objects.get(pk=$ID)
+      - pattern: $MODEL.objects.filter(id=$ID)
+      - pattern: get_object_or_404($MODEL, pk=$ID)
+    pattern-sanitizers:
+      - pattern: $MODEL.objects.filter(user=request.user)
+      - pattern: $MODEL.objects.filter(owner=request.user)
+
+  - id: DJANGO-OWASP-API-BOLA
+    message: >
+      API BOLA Risk: Querying objects using IDs from request body/params without ownership checks.
+      Verify the requesting user owns the resource.
+    severity: ERROR
+    languages: [python]
+    mode: taint
+    metadata:
+      category: security
+      owasp: "A01:2021 Broken Access Control"
+      references:
+        - "https://github.com/OWASP/API-Security/blob/master/2019/en/src/0xa1-broken-object-level-authorization.md"
+    pattern-sources:
+      - pattern: request.data
+      - pattern: request.query_params
+    pattern-sinks:
+      - pattern: $MODEL.objects.get(...)
+      - pattern: $MODEL.objects.filter(...)
+
+  - id: DJANGO-OWASP-OPEN-REDIRECT-UNVALIDATED
+    message: >
+      Possible open redirect: user input used in HttpResponseRedirect without validation.
+      Validate URLs against allowlist or use django.utils.http.url_has_allowed_host_and_scheme().
+    severity: ERROR
+    languages: [python]
+    mode: taint
+    metadata:
+      category: security
+      owasp: "A01:2021 Broken Access Control"
+      cwe: "CWE-601"
+      references:
+        - "https://docs.djangoproject.com/en/stable/ref/utils/#django.utils.http.url_has_allowed_host_and_scheme"
+        - "https://cheatsheetseries.owasp.org/cheatsheets/Unvalidated_Redirects_and_Forwards_Cheat_Sheet.html"
+    pattern-sources:
+      - pattern: request.GET.get(...)
+      - pattern: request.POST.get(...)
+    pattern-sinks:
+      - pattern: HttpResponseRedirect($URL)
+      - pattern: redirect($URL)
+    pattern-sanitizers:
+      - pattern: django.utils.http.url_has_allowed_host_and_scheme($URL, ...)
+
+  # ============================================================
+  # A02: Cryptographic Failures
+  # ============================================================
+
+  - id: DJANGO-OWASP-HARDCODED-PASSWORD-HASH
+    message: >
+      Detected hardcoded password or unsafe hashing. Use Django's make_password() or check_password().
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: security
+      owasp: "A02:2021 Cryptographic Failures"
+      cwe: "CWE-259"
+      references:
+        - "https://docs.djangoproject.com/en/stable/topics/auth/passwords/"
+    patterns:
+      - pattern: User.objects.create_user(..., password="$STR")
+      - pattern: user.set_password("$STR")
+
+  - id: DJANGO-OWASP-WEAK-HASHING-MD5-SHA1
+    message: >
+      Weak cryptographic hashing algorithm detected (MD5/SHA-1).
+      Use hashlib.sha256() or Django's built-in hashers.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: security
+      owasp: "A02:2021 Cryptographic Failures"
+      cwe: "CWE-327"
+      references:
+        - "https://cheatsheetseries.owasp.org/cheatsheets/Cryptographic_Storage_Cheat_Sheet.html"
+    pattern-either:
+      - pattern: hashlib.md5(...)
+      - pattern: hashlib.sha1(...)
+
+  # ============================================================
+  # A03: Injection (SQL, XSS, Command, File, LDAP, XML)
+  # ============================================================
+
+  - id: DJANGO-OWASP-SQLI-RAW-QUERY
+    message: >
+      Possible SQL injection in raw query. Use Django ORM with parameterized queries (`params=[]`).
+    severity: ERROR
+    languages: [python]
+    mode: taint
+    metadata:
+      category: security
+      owasp: "A03:2021 Injection"
+      cwe: "CWE-89"
+      references:
+        - "https://docs.djangoproject.com/en/stable/topics/db/sql/"
+        - "https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html"
+    pattern-sources:
+      - pattern: request.GET.get(...)
+      - pattern: request.POST.get(...)
+      - pattern: request.data.get(...)
+    pattern-sinks:
+      - pattern: $MODEL.objects.raw($QUERY)
+      - pattern: connection.cursor().execute($QUERY)
+      - pattern: cursor.execute(f"...{$VAR}...")
+
+  - id: DJANGO-OWASP-XSS-MARK-SAFE
+    message: >
+      Use of `mark_safe` on user input bypasses Django's auto-escaping XSS protection. 
+      Ensure input is sanitized (e.g., via `bleach`) before marking as safe.
+    severity: ERROR
+    languages: [python]
+    mode: taint
+    metadata:
+      category: security
+      owasp: "A03:2021 Injection"
+      cwe: "CWE-79"
+      references:
+        - "https://docs.djangoproject.com/en/stable/utils/#django.utils.safestring.mark_safe"
+        - "https://cheatsheetseries.owasp.org/cheatsheets/Cross_Site_Scripting_Prevention_Cheat_Sheet.html"
+    pattern-sources:
+      - pattern: request.GET.get(...)
+      - pattern: request.POST.get(...)
+    pattern-sinks:
+      - pattern: django.utils.safestring.mark_safe(...)
+      - pattern: django.utils.html.mark_safe(...)
+    pattern-sanitizers:
+      - pattern: bleach.clean(...)
+      - pattern: django.utils.html.escape(...)
+
+  - id: DJANGO-OWASP-CMDI-SUBPROCESS
+    message: >
+      Possible OS command injection: user input reaches subprocess calls.
+      Use `shlex.quote()` or avoid executing system commands with user input.
+    severity: ERROR
+    languages: [python]
+    mode: taint
+    metadata:
+      category: security
+      owasp: "A03:2021 Injection"
+      cwe: "CWE-78"
+      references:
+        - "https://cheatsheetseries.owasp.org/cheatsheets/OS_Command_Injection_Defense_Cheat_Sheet.html"
+    pattern-sources:
+      - pattern: request.GET.get(...)
+      - pattern: request.POST.get(...)
+    pattern-sinks:
+      - pattern: subprocess.call($CMD, ...)
+      - pattern: subprocess.run($CMD, ...)
+      - pattern: os.system($CMD)
+    pattern-sanitizers:
+      - pattern: shlex.quote($X)
+
+  - id: DJANGO-OWASP-FILE-UPLOAD-EXTENSIONS
+    message: >
+      File upload detected without extension validation. 
+      Attackers can upload malicious scripts (.php, .py). Whitelist allowed extensions.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: security
+      owasp: "A03:2021 Injection"
+      cwe: "CWE-434"
+      references:
+        - "https://cheatsheetseries.owasp.org/cheatsheets/File_Upload_Cheat_Sheet.html"
+    patterns:
+      - pattern: |
+          def $VIEW(request, ...):
+              ...
+              $FILE = request.FILES[...]
+              ...
+              $FILE.save(...)
+      - pattern-not-inside: |
+          def $VIEW(request, ...):
+              ...
+              if $FILE.name.endswith(...):
+                  ...
+              ...
+
+  - id: DJANGO-OWASP-SSTI-TEMPLATE-RENDER
+    message: >
+      Possible Server-Side Template Injection (SSTI). 
+      Avoid rendering user input directly as a template string.
+    severity: ERROR
+    languages: [python]
+    mode: taint
+    metadata:
+      category: security
+      owasp: "A03:2021 Injection"
+      cwe: "CWE-94"
+      references:
+        - "https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Template_Injection_Prevention_Cheat_Sheet.html"
+    pattern-sources:
+      - pattern: request.GET.get(...)
+      - pattern: request.POST.get(...)
+    pattern-sinks:
+      - pattern: Template($TEMPLATE).render(...)
+      - pattern: render_to_string($TEMPLATE, ...)
+
+  - id: DJANGO-OWASP-LDAP-INJECTION-FILTER
+    message: >
+      Possible LDAP injection: user input reaches LDAP filter.
+      Use django-auth-ldap with proper escaping.
+    severity: ERROR
+    languages: [python]
+    mode: taint
+    metadata:
+      category: security
+      owasp: "A03:2021 Injection"
+      cwe: "CWE-90"
+      references:
+        - "https://cheatsheetseries.owasp.org/cheatsheets/LDAP_Injection_Prevention_Cheat_Sheet.html"
+    pattern-sources:
+      - pattern: request.GET.get(...)
+      - pattern: request.POST.get(...)
+    pattern-sinks:
+      # FIX: Added outer single quotes and inner double quotes to match string literals
+      - pattern: '"(&(objectClass=$CLASS)(uid=$USER))"'
+      # FIX: Added f-string support which is common in Python 3
+      - pattern: 'f"(&(objectClass={$CLASS})(uid={$USER}))"'
+      - pattern: filter_string.format(...)
+
+  - id: DJANGO-OWASP-XXE-XMLPARSER
+    message: >
+      Potential XXE risk: XML parsing without disabling external entities.
+      Use defusedxml or configure lxml/XMLParser to disable DTD/external entities.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: security
+      owasp: "A03:2021 Injection"
+      cwe: "CWE-611"
+      references:
+        - "https://cheatsheetseries.owasp.org/cheatsheets/XML_External_Entity_Prevention_Cheat_Sheet.html"
+    patterns:
+      - pattern: |
+          import xml.etree.ElementTree as ET
+          ...
+          ET.parse($FILE)
+      - pattern: |
+          import lxml.etree as ET
+          ...
+          ET.parse($FILE)
+      - pattern-not-inside: |
+          parser = ET.XMLParser(..., resolve_entities=False, ...)
+          ...
+          ET.parse($FILE, parser=parser)
+
+  - id: DJANGO-OWASP-EMAIL-HEADER-INJECTION
+    message: >
+      Possible email header injection: user input in email headers without validation.
+    severity: ERROR
+    languages: [python]
+    mode: taint
+    metadata:
+      category: security
+      owasp: "A03:2021 Injection"
+      cwe: "CWE-93"
+      references:
+        - "https://cheatsheetseries.owasp.org/cheatsheets/Email_Injection_Cheat_Sheet.html"
+    pattern-sources:
+      - pattern: request.POST.get("email", ...)
+    pattern-sinks:
+      - pattern: send_mail($SUBJECT, ...)
+
+  # ============================================================
+  # A04: Insecure Design (Business Logic & Mass Assignment)
+  # ============================================================
+
+  - id: DJANGO-OWASP-BUSINESS-LOGIC-FINANCIAL
+    message: >
+      Potential Business Logic Flaw: Critical variables (price, balance, amount, role) 
+      assigned directly from user input. Ensure strict validation/upper bounds.
+    severity: WARNING
+    languages: [python]
+    metadata:
+      category: security
+      owasp: "A04:2021 Insecure Design"
+      references:
+        - "https://cheatsheetseries.owasp.org/cheatsheets/Mass_Assignment_Cheat_Sheet.html"
+    patterns:
+      - pattern-either:
+        - pattern: $OBJ.price = request.POST.get(...)
+        - pattern: $OBJ.amount = request.POST.get(...)
+        - pattern: $OBJ.balance = request.POST.get(...)
+        - pattern: $OBJ.is_staff = request.POST.get(...)
+        - pattern: $OBJ.is_superuser = request.POST.get(...)
+
+  - id: DJANGO-OWASP-MASS-ASSIGNMENT-MODELFORM
+    message: >
+      ModelForm defined without 'fields' or 'exclude'. 
+      Explicitly define fields to prevent Mass Assignment.
+    severity: WARNING
+    languages: [python]
+    metadata:
+      category: security
+      owasp: "A04:2021 Insecure Design"
+      cwe: "CWE-915"
+      references:
+        - "https://docs.djangoproject.com/en/stable/topics/forms/modelforms/#selecting-the-fields-to-use"
+    patterns:
+      - pattern: |
+          class $FORM(forms.ModelForm):
+              class Meta:
+                  model = $MODEL
+      - pattern-not: |
+          class $FORM(forms.ModelForm):
+              class Meta:
+                  model = $MODEL
+                  fields = [...]
+      - pattern-not: |
+          class $FORM(forms.ModelForm):
+              class Meta:
+                  model = $MODEL
+                  exclude = [...]
+
+  # ============================================================
+  # A05: Security Misconfiguration
+  # ============================================================
+
+  - id: DJANGO-OWASP-DEBUG-ENABLED
+    message: DEBUG=True is unsafe for production. Exposes stack traces and env vars.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: security
+      owasp: "A05:2021 Security Misconfiguration"
+      references:
+        - "https://docs.djangoproject.com/en/stable/ref/settings/#debug"
+    paths:
+      include: ["**/settings.py", "**/settings/*.py"]
+      exclude: ["**/test*.py"]
+    patterns:
+      - pattern: DEBUG = True
+
+  - id: DJANGO-OWASP-SECRET-KEY-HARDCODED
+    message: >
+      Hardcoded Django SECRET_KEY detected. Load this from environment variables (os.environ).
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: security
+      owasp: "A05:2021 Security Misconfiguration"
+      references:
+        - "https://docs.djangoproject.com/en/stable/ref/settings/#secret-key"
+    paths:
+      include: ["**/settings.py", "**/settings/*.py"]
+    patterns:
+      - pattern: SECRET_KEY = "..."
+      - pattern: SECRET_KEY='...'
+      - pattern-not: SECRET_KEY = os.environ.get(...)
+
+  - id: DJANGO-OWASP-CSRF-DISABLED
+    message: >
+      CSRF protection disabled. If this is an API, use Token Authentication. 
+      If a standard view, remove @csrf_exempt.
+    severity: WARNING
+    languages: [python]
+    metadata:
+      category: security
+      owasp: "A05:2021 Security Misconfiguration"
+      cwe: "CWE-352"
+      references:
+        - "https://docs.djangoproject.com/en/stable/ref/csrf/"
+    patterns:
+      - pattern-either:
+          - pattern: "@csrf_exempt"
+          - pattern: "@django.views.decorators.csrf.csrf_exempt"
+
+  - id: DJANGO-OWASP-CORS-PERMISSIVE
+    message: >
+      Permissive CORS configuration detected (CORS_ALLOW_ALL_ORIGINS=True).
+      This allows any website to make requests to your API.
+    severity: WARNING
+    languages: [python]
+    metadata:
+      category: security
+      owasp: "A05:2021 Security Misconfiguration"
+      references:
+        - "https://github.com/adamchainz/django-cors-headers"
+    patterns:
+      - pattern: CORS_ALLOW_ALL_ORIGINS = True
+
+  - id: DJANGO-OWASP-HTTP-METHOD-VALIDATION
+    message: >
+      State-changing operations (create/update/delete) inside a view without Method check.
+      Use @require_POST or check if request.method == 'POST'.
+    severity: WARNING
+    languages: [python]
+    metadata:
+      category: security
+      owasp: "A05:2021 Security Misconfiguration"
+      references:
+        - "https://docs.djangoproject.com/en/stable/topics/http/decorators/#django.views.decorators.http.require_http_methods"
+    patterns:
+      - pattern: |
+          def $VIEW(request, ...):
+              if request.method == "GET":
+                  ...
+                  $MODEL.objects.create(...)
+      - pattern-not-inside: |
+          @require_POST
+          def $VIEW(request, ...):
+              ...
+
+  - id: DJANGO-OWASP-API-RATE-LIMITING
+    message: >
+      Django REST Framework view missing throttling. 
+      Add 'throttle_classes' or use '@ratelimit' to prevent DoS/Brute Force.
+    severity: WARNING
+    languages: [python]
+    metadata:
+      category: security
+      owasp: "A05:2021 Security Misconfiguration"
+      references:
+        - "https://www.django-rest-framework.org/api-guide/throttling/"
+    patterns:
+      - pattern: |
+          class $VIEW(..., APIView):
+              ...
+      - pattern-not-inside: |
+          class $VIEW(..., APIView):
+              ...
+              throttle_classes = [...]
+      - pattern-not-inside: |
+          @ratelimit(...)
+          def $VIEW(...):
+              ...
+
+  # ============================================================
+  # A06: Vulnerable and Outdated Components
+  # ============================================================
+
+  - id: DJANGO-OWASP-OUTDATED-DEPENDENCIES
+    message: >
+      Usage of outdated/EOL Django or DRF versions detected. 
+      Update to the latest LTS version to patch known vulnerabilities.
+    severity: ERROR
+    languages: [generic]
+    metadata:
+      category: security
+      owasp: "A06:2021 Vulnerable and Outdated Components"
+      references:
+        - "https://www.djangoproject.com/download/"
+    paths:
+      include: ["requirements.txt", "Pipfile", "pyproject.toml"]
+    patterns:
+      - pattern-regex: "(?i)django==1\\."
+      - pattern-regex: "(?i)django==2\\."
+      - pattern-regex: "(?i)django==3\\.0"
+      - pattern-regex: "(?i)djangorestframework<3\\.10"
+
+  # ============================================================
+  # A08: Software and Data Integrity Failures
+  # ============================================================
+
+  - id: DJANGO-OWASP-PICKLE-INSECURE
+    message: >
+      Insecure deserialization: pickle/cPickle used with user-controlled data.
+      Pickle can execute arbitrary code. Use JSON or Django's serialization.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: security
+      owasp: "A08:2021 Software and Data Integrity Failures"
+      cwe: "CWE-502"
+      references:
+        - "https://cheatsheetseries.owasp.org/cheatsheets/Deserialization_Cheat_Sheet.html"
+    patterns:
+      - pattern: pickle.loads(...)
+      - pattern: cPickle.loads(...)
+
+  - id: DJANGO-OWASP-YAML-UNSAFE-LOAD
+    message: >
+      Unsafe YAML loading: yaml.load() used without Loader=yaml.SafeLoader.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: security
+      owasp: "A08:2021 Software and Data Integrity Failures"
+      references:
+        - "https://github.com/yaml/pyyaml/wiki/PyYAML-yaml.load(input)-Deprecation"
+    patterns:
+      - pattern: yaml.load($DATA)
+      - pattern-not: yaml.safe_load($DATA)
+      - pattern-not: yaml.load($DATA, Loader=yaml.SafeLoader)
+
+  # ============================================================
+  # A09: Security Logging Failures
+  # ============================================================
+
+  - id: DJANGO-OWASP-LOG-INJECTION-FORMATTING
+    message: >
+      Unsafe logging pattern: string formatting in logger calls can lead to log injection.
+      Use parameterized logging (logger.info("msg %s", value)).
+    severity: INFO
+    languages: [python]
+    metadata:
+      category: security
+      owasp: "A09:2021 Security Logging and Monitoring Failures"
+      cwe: "CWE-117"
+      references:
+        - "https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html"
+    pattern-either:
+      - pattern: logger.info(f"...{$X}...")
+      - pattern: logger.info("..." % $X)
+
+  # ============================================================
+  # A10: Server-Side Request Forgery (SSRF)
+  # ============================================================
+
+  - id: DJANGO-OWASP-SSRF-URLFETCH
+    message: >
+      Possible SSRF: User input used in HTTP client requests. 
+      Validate domain against an allowlist before making requests.
+    severity: ERROR
+    languages: [python]
+    mode: taint
+    metadata:
+      category: security
+      owasp: "A10:2021 SSRF"
+      cwe: "CWE-918"
+      references:
+        - "https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html"
+    pattern-sources:
+      - pattern: request.GET.get(...)
+      - pattern: request.POST.get(...)
+      - pattern: request.data.get(...)
+    pattern-sinks:
+      - pattern: requests.get(...)
+      - pattern: requests.post(...)
+      - pattern: urllib.request.urlopen(...)
+      - pattern: httpx.get(...)
+
+  # ============================================================
+  # Custom: Cache Poisoning
+  # ============================================================
+
+  - id: DJANGO-OWASP-CACHE-POISONING-UNVALIDATED
+    message: >
+      Possible cache poisoning: user input used in cache keys without validation.
+    severity: WARNING
+    languages: [python]
+    mode: taint
+    metadata:
+      category: security
+      cwe: "CWE-444"
+      references:
+        - "https://cheatsheetseries.owasp.org/cheatsheets/Cache_Poisoning_Cheat_Sheet.html"
+    pattern-sources:
+      - pattern: request.GET.get("key", ...)
+    pattern-sinks:
+      - pattern: cache.set($KEY, ...)
